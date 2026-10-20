@@ -1,7 +1,6 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { jwtVerify } from 'jose';
-import { randomBytes } from 'crypto';
 import { query } from './db';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { User } from './types';
@@ -10,7 +9,6 @@ const SESSION_COOKIE = 'webdev_app_session';
 const STATE_COOKIE = 'snapshop_oauth_state';
 
 type JwtPayload = { openId?: string; open_id?: string; email?: string; name?: string; appId?: string; exp?: number };
-export function oauthStartUrl() { const portal = process.env.MANUS_OAUTH_PORTAL_URL; const projectId = process.env.MANUS_PROJECT_ID; if (!portal || !projectId) return null; const origin = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'; const callback = `${origin.replace(/\/$/, '')}/auth/callback`; const nonce = randomBytes(18).toString('hex'); const state = Buffer.from(JSON.stringify({ redirectUri: callback, nonce })).toString('base64url'); cookies().set(STATE_COOKIE, nonce, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 600, path: '/' }); const params = new URLSearchParams({ appId: projectId, redirectUri: callback, state, responseType: 'code' }); return `${portal.replace(/\/$/, '')}/app-auth?${params}`; }
 export async function getCurrentUser(): Promise<User | null> { const token = cookies().get(SESSION_COOKIE)?.value; if (!token || !process.env.MANUS_JWT_SECRET) return null; try { const secret = new TextEncoder().encode(process.env.MANUS_JWT_SECRET); const { payload } = await jwtVerify<JwtPayload>(token, secret, { algorithms: ['HS256'] }); const openId = payload.openId || payload.open_id; if (!openId || (process.env.MANUS_PROJECT_ID && payload.appId && payload.appId !== process.env.MANUS_PROJECT_ID)) return null; return await ensureProfile(openId, payload.email, payload.name); } catch { return null; } }
 export async function requireUser() { const user = await getCurrentUser(); if (!user) redirect('/login?next=/admin'); return user; }
 export async function requireStoreAccess(storeId: string) { const user = await requireUser(); const stores = await query<(RowDataPacket & { id: string; owner_id: string | null; slug: string; name: string; status: string })[]>('SELECT id, owner_id, slug, name, status FROM stores WHERE id = ?', [storeId]); const store = stores[0]; if (!store || (!user.isOperator && store.owner_id !== user.id)) redirect('/admin'); return { user, store } as const; }
