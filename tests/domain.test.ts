@@ -3,7 +3,7 @@ import { isPrivateHost, isSafeImageUrl, productOrderUrl, validateSlug } from '@/
 import type { Product, Store } from '@/src/lib/types';
 
 const store: Store = { id: 's', slug: 'shop', name: 'Test Shop', themeColor: '#111111', currency: 'USD', status: 'published', email: 'hello@example.com', whatsappNumber: '14155550123', instagramHandle: 'testshop', createdAt: '', updatedAt: '' };
-const product: Product = { id: 'p', storeId: 's', title: 'Blue Mug', price: 24, currency: 'USD', imageUrls: [], availability: 'in_stock', sortOrder: 0, createdAt: '', updatedAt: '' };
+const product: Product = { id: 'p', storeId: 's', title: 'Blue Mug', price: 24, currency: 'USD', imageUrls: [], availability: 'in_stock', sortOrder: 0, isDraft: false, createdAt: '', updatedAt: '' };
 
 describe('domain helpers', () => {
   it('rejects reserved and malformed slugs', () => { expect(validateSlug('admin')).toContain('reserved'); expect(validateSlug('A bad slug')).toContain('lowercase'); expect(validateSlug('ok')).toContain('3 to 40'); expect(validateSlug('good-shop')).toBeNull(); });

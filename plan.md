@@ -48,3 +48,11 @@ Three possible directions were considered only to prevent accidental branding de
 - **Brand Voice:** short operational copy such as “Import products” and “Your store is live.”
 - **Wordmark & Logo:** deferred until branding work begins.
 - **Signature Brand Color:** deferred until branding work begins.
+
+## Phase 2 Instagram Connect implementation
+
+Phase 2 follows the current Page-linked Facebook Login contract documented by Meta. The integration uses server-only environment variables for the Meta app ID, app secret, graph version, redirect URI, and token-encryption key. The connection flow stores a short-lived CSRF state cookie bound to the current store, redirects through Facebook Login, exchanges the authorization code server-side, reads the user’s managed Pages, selects a Page with a connected Instagram professional account, reads the Instagram profile, and stores only an encrypted long-lived access token.
+
+The database adds `instagram_connections` for one active connection per store and `instagram_deletion_requests` for signed data-deletion callback tracking. Products gain draft/source metadata so manually refreshed Instagram media becomes hidden draft products with a stable `ig:<media-id>` source key. Owners can review and publish those products through the existing product edit flow. Media sync reads caption, media type, image/thumbnail URL, permalink, timestamp, and username; it never attempts to infer a price from captions.
+
+The new admin route `/admin/[storeId]/instagram` exposes connection status, connect, manual refresh, and disconnect. `/api/meta/callback` handles the OAuth callback, `/api/meta/data-deletion` verifies Meta’s HMAC-signed request and removes the related connection and Instagram-sourced products, and `/meta/deletion-status` provides the human-readable deletion status URL required by Meta. Token renewal is represented by expiry/status handling and a manual refresh path; scheduled daily sync is intentionally not added until the manual flow is proven.

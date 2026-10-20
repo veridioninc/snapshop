@@ -11,8 +11,9 @@ export type Store = {
 export type Product = {
   id: string; storeId: string; sku?: string | null; title: string; description?: string | null; price: number;
   currency: Currency; imageUrls: string[]; category?: string | null; availability: Availability; sortOrder: number;
-  externalLink?: string | null; createdAt: string; updatedAt: string;
+  externalLink?: string | null; isDraft: boolean; source?: string | null; sourceId?: string | null; sourceUserId?: string | null; createdAt: string; updatedAt: string;
 };
 export type ImportError = { row: number; field: string; message: string; level?: 'error' | 'warning' };
 export type ImportPreview = { headers: string[]; rowsFound: number; validRows: CsvProductRow[]; invalidRows: CsvProductRow[]; errors: ImportError[]; creates: number; updates: number; warnings: string[] };
 export type CsvProductRow = { title: string; price: string; image_url: string; description?: string; category?: string; currency?: string; availability?: string; external_link?: string; sku?: string; [key: string]: string | undefined };
+export type InstagramConnection = { id: string; storeId: string; igUserId: string; pageId: string; pageName?: string | null; username?: string | null; profilePictureUrl?: string | null; tokenExpiresAt?: string | null; status: 'connected' | 'expired' | 'error' | 'revoked'; lastSyncedAt?: string | null; createdAt: string; updatedAt: string };

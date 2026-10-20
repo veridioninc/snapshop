@@ -1,0 +1,7 @@
+import { randomBytes, randomUUID } from 'crypto';
+import { NextResponse } from 'next/server';
+import { query } from '@/src/lib/db';
+import { deleteMetaData, verifyMetaSignedRequest } from '@/src/lib/meta';
+import type { ResultSetHeader } from 'mysql2/promise';
+
+export async function POST(request: Request) { const form = await request.formData().catch(() => null); const signed = String(form?.get('signed_request') || ''); const payload = verifyMetaSignedRequest(signed); if (!payload?.user_id) return NextResponse.json({ error: 'Invalid signed request.' }, { status: 400 }); const confirmationCode = randomBytes(8).toString('hex'); const id = randomUUID(); await query<ResultSetHeader>('INSERT INTO instagram_deletion_requests (id, meta_user_id, confirmation_code, status) VALUES (?, ?, ?, \'received\')', [id, payload.user_id, confirmationCode]); try { await deleteMetaData(payload.user_id); await query('UPDATE instagram_deletion_requests SET status = \'completed\', completed_at = NOW() WHERE id = ?', [id]); } catch { await query('UPDATE instagram_deletion_requests SET status = \'error\' WHERE id = ?', [id]); return NextResponse.json({ error: 'Deletion cleanup failed; please retry.' }, { status: 500 }); } const base = (process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin).replace(/\/$/, ''); return NextResponse.json({ url: `${base}/meta/deletion-status?code=${confirmationCode}`, confirmation_code: confirmationCode }); }
