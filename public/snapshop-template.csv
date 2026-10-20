@@ -1,0 +1,2 @@
+title,price,image_url,description,category,currency,availability,external_link,sku
+Example product,24.00,https://example.com/product.jpg,Short description,Category,USD,in_stock,https://example.com,example-001

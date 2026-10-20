@@ -1,0 +1,6 @@
+import Link from 'next/link';
+import { requireStoreAccess } from '@/src/lib/auth';
+import { getImport } from '@/src/lib/imports';
+import { notFound } from 'next/navigation';
+
+export default async function ImportReportPage({ params }: { params: { storeId: string; importId: string } }) { const { store } = await requireStoreAccess(params.storeId); const item = await getImport(store.id, params.importId); if (!item) notFound(); const errors = item.report.errors || []; return <div className="stack"><div className="split"><div><h1 style={{ marginBottom: 4 }}>Import report</h1><p className="muted">{item.filename} · {item.status} · {item.imported_count} imported</p></div><Link href={`/admin/${store.id}/import`}>New import</Link></div><div className="card stack"><div className="row"><span className="badge">{item.report.rowsFound || item.row_count} rows</span><span className="badge live">{item.report.validRows?.length || 0} valid</span><span className="badge out">{item.report.invalidRows?.length || 0} invalid</span></div>{errors.length ? <div className="table-wrap"><table><thead><tr><th>Row</th><th>Field</th><th>Message</th></tr></thead><tbody>{errors.map((error: any, index: number) => <tr key={index}><td>{error.row}</td><td>{error.field}</td><td>{error.message}</td></tr>)}</tbody></table></div> : <p className="muted">No row errors.</p>}</div></div>; }

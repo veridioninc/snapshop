@@ -1,0 +1,1 @@
+export function EmptyState({ title, children }: { title: string; children?: React.ReactNode }) { return <div className="card stack"><h2 style={{ margin: 0 }}>{title}</h2>{children && <div className="muted">{children}</div>}</div>; }
