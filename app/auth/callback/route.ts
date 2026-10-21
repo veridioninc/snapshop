@@ -1,16 +1,16 @@
 import { NextResponse } from 'next/server';
-import { exchangeCode, sessionCookieName } from '@/src/lib/auth';
+import { safeRedirectPath } from '@/src/lib/auth';
+import { createServerClient, supabaseConfigured } from '@/src/lib/supabase/server';
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
-  if (!code || !state) return NextResponse.redirect(new URL('/login?error=missing_callback', url));
+  if (!supabaseConfigured()) return NextResponse.redirect(new URL('/login?error=not_configured', url));
+  if (!code) return NextResponse.redirect(new URL('/login?error=missing_callback', url));
   try {
-    const { token } = await exchangeCode(code, state);
-    const response = NextResponse.redirect(new URL('/admin', url));
-    response.cookies.set(sessionCookieName, token, { httpOnly: true, secure: true, sameSite: 'none', path: '/', maxAge: 60 * 60 * 24 * 30 });
-    return response;
+    const { error } = await createServerClient().auth.exchangeCodeForSession(code);
+    if (error) throw error;
+    return NextResponse.redirect(new URL(safeRedirectPath(url.searchParams.get('next')), url.origin));
   } catch {
     return NextResponse.redirect(new URL('/login?error=callback_failed', url));
   }

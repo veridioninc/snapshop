@@ -1,11 +1,11 @@
 # Snap Shop Phase 1 TODO
 ## 1. Persistent data model and access control
-- [ ] Create profiles, stores, products, and imports in the managed MySQL database with the specified fields, enums/status values, foreign keys, cascading product/import deletion, and indexes.
+- [ ] Create profiles, stores, products, and imports in Supabase Postgres through versioned migrations with the specified fields, enums/status values, foreign keys, cascading product/import deletion, indexes, and RLS policies.
 - [ ] Enforce server-side ownership checks: operators can access all stores; store owners can access only their own store; anonymous visitors can read only published stores/products; imports remain private.
 - [ ] Validate slugs as lowercase letters/numbers/hyphens, 3–40 characters, reject reserved slugs, and return a clear uniqueness error without silently appending numbers.
 - [ ] Keep protected application/session values server-only and never expose database credentials or role decisions to client code.
 ## 2. Authentication and admin shell
-- [ ] Implement the project’s Manus OAuth login/callback/session contract at `/login` and `/auth/callback`.
+- [ ] Implement Supabase Auth email magic links at `/login` and `/auth/callback`, with safe redirect handling, session refresh, and non-disclosing “check your email” feedback.
 - [ ] Keep `/admin` and all nested admin routes server-protected; show the store list with status, product count, and last-updated information.
 - [ ] Support operator-created stores and store-owner access to exactly their own store.
 ## 3. Store settings and publishing
@@ -32,12 +32,12 @@
 - [ ] Track storefront, product, and order-click events without personal data.
 ## 7. SEO, accessibility, and platform routes
 - [ ] Provide route-specific title/description, canonical URL when configured, Open Graph/Twitter metadata, LocalBusiness/Product structured data, and the correct public 404 behavior.
-- [ ] Provide `/sitemap.xml`, `/robots.txt`, and `/manus-routes.json`; sitemap includes published stores and products and robots disallows admin/login/auth.
+- [ ] Provide `/sitemap.xml` and `/robots.txt`; sitemap includes published stores and products and robots disallows admin/login/auth.
 - [ ] Keep public content keyboard reachable, provide image alt text, avoid horizontal overflow, honor reduced motion, and use accessible contrast defaults.
 ## 8. Verification and delivery
 - [ ] Add unit tests for CSV parsing/validation, slug rules, order-link priority and encoding, and currency formatting.
 - [ ] Add checks for create/publish/public rendering, draft protection, re-import matching, private-network URL blocking, and route-manifest validity.
-- [ ] Start the app on port 3000, verify the route manifest and representative public pages, run typecheck/tests/build, and save a checkpoint with publication still disabled.
+- [ ] Start the app on port 3000, verify representative public pages, run typecheck/tests/build, and save a standalone checkpoint with publication still disabled.
 
 ## Phase 2 — Instagram Connect
 - [ ] Connect only professional Instagram Business or Creator accounts linked to a Facebook Page the owner manages, using Facebook Login with CSRF state validation and server-side code exchange.

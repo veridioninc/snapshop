@@ -1,20 +1,31 @@
-import { randomBytes } from 'crypto';
 import { NextResponse } from 'next/server';
-
-const STATE_COOKIE = 'snapshop_oauth_state';
+import { isSameOrigin, safeRedirectPath, sendMagicLink } from '@/src/lib/auth';
+import { supabaseConfigured } from '@/src/lib/supabase/server';
 
 export async function GET(request: Request) {
-  const portal = process.env.MANUS_OAUTH_PORTAL_URL;
-  const projectId = process.env.MANUS_PROJECT_ID;
-  if (!portal || !projectId) return NextResponse.redirect(new URL('/login?error=not_configured', request.url));
+  const url = new URL(request.url);
+  const login = new URL('/login', url.origin);
+  login.searchParams.set('next', safeRedirectPath(url.searchParams.get('next')));
+  return NextResponse.redirect(login);
+}
 
-  const requestUrl = new URL(request.url);
-  const origin = process.env.NEXT_PUBLIC_SITE_URL || requestUrl.origin;
-  const callback = `${origin.replace(/\/$/, '')}/auth/callback`;
-  const nonce = randomBytes(18).toString('hex');
-  const state = Buffer.from(JSON.stringify({ redirectUri: callback, nonce })).toString('base64url');
-  const params = new URLSearchParams({ appId: projectId, redirectUri: callback, state, responseType: 'code' });
-  const response = NextResponse.redirect(`${portal.replace(/\/$/, '')}/app-auth?${params.toString()}`);
-  response.cookies.set(STATE_COOKIE, nonce, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 600, path: '/' });
-  return response;
+export async function POST(request: Request) {
+  if (!isSameOrigin(request)) return NextResponse.json({ error: 'Cross-origin request rejected.' }, { status: 403 });
+  const url = new URL(request.url);
+  const login = new URL('/login', url.origin);
+  if (!supabaseConfigured()) {
+    login.searchParams.set('error', 'not_configured');
+    return NextResponse.redirect(login, 303);
+  }
+  const form = await request.formData().catch(() => null);
+  const email = String(form?.get('email') || '').trim();
+  const next = safeRedirectPath(String(form?.get('next') || '/admin'));
+  login.searchParams.set('next', next);
+  try {
+    await sendMagicLink(email, url.origin, next);
+    login.searchParams.set('sent', '1');
+  } catch {
+    login.searchParams.set('error', 'magic_link_failed');
+  }
+  return NextResponse.redirect(login, 303);
 }

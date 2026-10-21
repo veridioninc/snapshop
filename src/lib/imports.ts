@@ -1,11 +1,60 @@
 import { randomUUID } from 'crypto';
-import type { RowDataPacket } from 'mysql2/promise';
-import { ensureSchema, getPool, parseJsonArray, query } from './db';
 import { parseCsv } from './csv';
-import { toAvailability } from './domain';
-import type { ImportPreview, User } from './types';
 import { getProducts } from './repository';
+import { createServerClient } from './supabase/server';
+import type { ImportRow, Json } from './supabase/database';
+import type { ImportPreview, User } from './types';
 
-export async function createPreviewImport(storeId: string, user: User, filename: string, text: string) { const existing = await getProducts(storeId, true); const preview = parseCsv(text, existing); const id = randomUUID(); await query('INSERT INTO imports (id, store_id, created_by, filename, row_count, imported_count, error_report, status) VALUES (?, ?, ?, ?, ?, 0, ?, \'previewed\')', [id, storeId, user.id, filename, preview.rowsFound, JSON.stringify(preview)]); return { id, preview }; }
-export async function getImport(storeId: string, importId: string) { const rows = await query<(RowDataPacket & { id: string; filename: string; row_count: number; imported_count: number; error_report: string; status: string; created_at: string })[]>('SELECT * FROM imports WHERE store_id = ? AND id = ?', [storeId, importId]); if (!rows[0]) return null; let report: any = {}; try { report = JSON.parse(rows[0].error_report || '{}'); } catch {} return { ...rows[0], report }; }
-export async function commitImport(storeId: string, importId: string) { await ensureSchema(); const importRow = await getImport(storeId, importId); if (!importRow) throw new Error('Import not found'); if (importRow.status === 'committed') return { count: importRow.imported_count, alreadyCommitted: true }; const preview = importRow.report as ImportPreview; const db = getPool(); const connection = await db.getConnection(); let imported = 0; try { await connection.beginTransaction(); const [storeRows] = await connection.query<RowDataPacket[]>('SELECT currency FROM stores WHERE id = ?', [storeId]); const defaultCurrency = String(storeRows[0]?.currency || 'USD'); for (const row of preview.validRows || []) { const sku = row.sku?.trim() || ''; const title = row.title.trim(); const [matches] = await connection.query<RowDataPacket[]>('SELECT id FROM products WHERE store_id = ? AND ((? <> \'\' AND sku = ?) OR (? = \'\' AND LOWER(TRIM(title)) = LOWER(TRIM(?)))) LIMIT 1', [storeId, sku, sku, sku, title]); const currency = (row.currency || defaultCurrency).toUpperCase(); const availability = toAvailability(row.availability); const images = (row.image_url || '').split(',').map((value) => value.trim()).filter(Boolean).slice(0, 5); if (matches[0]) { await connection.query('UPDATE products SET sku = ?, title = ?, description = ?, price = ?, currency = ?, image_urls = ?, category = ?, availability = ?, external_link = ? WHERE id = ? AND store_id = ?', [sku || null, title, row.description || null, Number(row.price).toFixed(2), currency, JSON.stringify(images), row.category || null, availability, row.external_link || null, matches[0].id, storeId]); } else { await connection.query('INSERT INTO products (id, store_id, sku, title, description, price, currency, image_urls, category, availability, external_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), storeId, sku || null, title, row.description || null, Number(row.price).toFixed(2), currency, JSON.stringify(images), row.category || null, availability, row.external_link || null]); } imported++; } await connection.query('UPDATE imports SET imported_count = ?, status = \'committed\' WHERE id = ? AND store_id = ?', [imported, importId, storeId]); await connection.commit(); return { count: imported, alreadyCommitted: false }; } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } }
+export async function createPreviewImport(storeId: string, user: User, filename: string, text: string) {
+  const supabase = createServerClient();
+  const existing = await getProducts(storeId, true);
+  const preview = parseCsv(text, existing);
+  const id = randomUUID();
+  const { error } = await supabase.from('imports').insert({
+    id,
+    store_id: storeId,
+    created_by: user.id,
+    filename,
+    row_count: preview.rowsFound,
+    imported_count: 0,
+    error_report: preview as unknown as Json,
+    status: 'previewed',
+  });
+  if (error) throw error;
+  return { id, preview };
+}
+
+function parseReport(value: Json): Partial<ImportPreview> {
+  // JSONB comes back as an object. Reading a legacy string is harmless, but new
+  // writes always use JSON objects rather than double-encoded JSON strings.
+  let parsed: unknown = value;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { return {}; }
+  }
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Partial<ImportPreview> : {};
+}
+
+export async function getImport(storeId: string, importId: string): Promise<(ImportRow & { report: Partial<ImportPreview> }) | null> {
+  const { data, error } = await createServerClient().from('imports').select('*')
+    .eq('store_id', storeId).eq('id', importId).maybeSingle();
+  if (error) throw error;
+  return data ? { ...data, report: parseReport(data.error_report) } : null;
+}
+
+export async function commitImport(storeId: string, importId: string): Promise<{ count: number; alreadyCommitted: boolean }> {
+  // The database function locks the import, checks the caller, upserts products,
+  // and marks the import committed in one transaction. Do not emulate it with
+  // multiple browser/API inserts; retries must be safe and atomic.
+  const { data, error } = await createServerClient().rpc('commit_import', {
+    p_store_id: storeId,
+    p_import_id: importId,
+  });
+  if (error) throw error;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('commit_import returned an invalid result.');
+  const count = data.count;
+  const alreadyCommitted = data.alreadyCommitted;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0 || typeof alreadyCommitted !== 'boolean') {
+    throw new Error('commit_import returned an invalid result.');
+  }
+  return { count, alreadyCommitted };
+}

@@ -1,19 +1,115 @@
-import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { jwtVerify } from 'jose';
-import { query } from './db';
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import { createAdminClient, createServerClient, supabaseConfigured } from './supabase/server';
 import type { User } from './types';
 
-const SESSION_COOKIE = 'webdev_app_session';
-const STATE_COOKIE = 'snapshop_oauth_state';
-
-type JwtPayload = { openId?: string; open_id?: string; email?: string; name?: string; appId?: string; exp?: number };
-export async function getCurrentUser(): Promise<User | null> { const token = cookies().get(SESSION_COOKIE)?.value; if (!token || !process.env.MANUS_JWT_SECRET) return null; try { const secret = new TextEncoder().encode(process.env.MANUS_JWT_SECRET); const { payload } = await jwtVerify<JwtPayload>(token, secret, { algorithms: ['HS256'] }); const openId = payload.openId || payload.open_id; if (!openId || (process.env.MANUS_PROJECT_ID && payload.appId && payload.appId !== process.env.MANUS_PROJECT_ID)) return null; return await ensureProfile(openId, payload.email, payload.name); } catch { return null; } }
-export async function requireUser() { const user = await getCurrentUser(); if (!user) redirect('/login?next=/admin'); return user; }
-export async function requireStoreAccess(storeId: string) { const user = await requireUser(); const stores = await query<(RowDataPacket & { id: string; owner_id: string | null; slug: string; name: string; status: string })[]>('SELECT id, owner_id, slug, name, status FROM stores WHERE id = ?', [storeId]); const store = stores[0]; if (!store || (!user.isOperator && store.owner_id !== user.id)) redirect('/admin'); return { user, store } as const; }
-export async function ensureProfile(openId: string, email?: string, name?: string) { const rows = await query<(RowDataPacket & { id: string; open_id: string; email: string | null; name: string | null; is_operator: number })[]>('SELECT id, open_id, email, name, is_operator FROM profiles WHERE open_id = ?', [openId]); if (rows[0]) return { id: rows[0].id, openId: rows[0].open_id, email: rows[0].email, name: rows[0].name, isOperator: Boolean(rows[0].is_operator) }; const count = await query<(RowDataPacket & { total: number })[]>('SELECT COUNT(*) total FROM profiles'); const user: User = { id: crypto.randomUUID(), openId, email, name, isOperator: Number(count[0]?.total || 0) === 0 }; await query<ResultSetHeader>('INSERT INTO profiles (id, open_id, email, name, is_operator) VALUES (?, ?, ?, ?, ?)', [user.id, openId, email || null, name || null, user.isOperator]); return user; }
-export async function exchangeCode(code: string, state: string) { const expected = cookies().get(STATE_COOKIE)?.value; cookies().delete(STATE_COOKIE); if (!expected) throw new Error('Missing OAuth state'); const parsed = JSON.parse(Buffer.from(state, 'base64url').toString('utf8')) as { nonce: string; redirectUri: string }; if (parsed.nonce !== expected) throw new Error('Invalid OAuth state'); const api = process.env.MANUS_OAUTH_API_URL; const clientId = process.env.MANUS_PROJECT_ID; if (!api || !clientId) throw new Error('OAuth is not configured'); const response = await fetch(`${api}/webdev.v1.WebDevAuthPublicService/ExchangeToken`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ clientId, grantType: 'authorization_code', code, redirectUri: parsed.redirectUri }) }); if (!response.ok) throw new Error('OAuth token exchange failed'); const data = await response.json() as { accessToken: string }; const info = await fetch(`${api}/webdev.v1.WebDevAuthPublicService/GetUserInfo`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accessToken: data.accessToken }) }); if (!info.ok) throw new Error('OAuth identity lookup failed'); const identity = await info.json() as { openId: string; email?: string; name?: string }; const user = await ensureProfile(identity.openId, identity.email, identity.name); return { user, token: data.accessToken };
+/** Validate the session with Auth, rather than trusting an unverified cookie. */
+export async function getCurrentUser(): Promise<User | null> {
+  if (!supabaseConfigured()) return null;
+  const supabase = createServerClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) return null;
+  const name: unknown = user.user_metadata.full_name ?? user.user_metadata.name;
+  return ensureProfile(user.id, user.email, typeof name === 'string' ? name : undefined);
 }
-export const sessionCookieName = SESSION_COOKIE;
-export function isSameOrigin(request: Request) { const origin = request.headers.get('origin'); if (!origin) return true; const allowed = new Set<string>([new URL(request.url).origin]); if (process.env.NEXT_PUBLIC_SITE_URL) { try { allowed.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).origin); } catch { /* ignore malformed optional config */ } } return allowed.has(origin); }
+
+export async function requireUser(): Promise<User> {
+  const user = await getCurrentUser();
+  if (!user) redirect('/login?next=/admin');
+  return user;
+}
+
+export async function requireStoreAccess(storeId: string) {
+  const user = await requireUser();
+  const supabase = createServerClient();
+  const { data: store, error } = await supabase
+    .from('stores')
+    .select('id, owner_id, slug, name, status')
+    .eq('id', storeId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!store || (!user.isOperator && store.owner_id !== user.id)) redirect('/admin');
+  return { user, store } as const;
+}
+
+/** Profiles use the Auth UUID as the primary key, not a separate identity key. */
+export async function ensureProfile(authUserId: string, email?: string, name?: string): Promise<User> {
+  const supabase = createServerClient();
+  const { data: existing, error: readError } = await supabase
+    .from('profiles')
+    .select('id, is_operator')
+    .eq('id', authUserId)
+    .maybeSingle();
+  if (readError) throw readError;
+
+  let profile = existing;
+  if (!profile) {
+    // The service role is needed only to create a missing profile. Ordinary
+    // profile reads and all store authorization use the authenticated client.
+    const admin = createAdminClient();
+    // The offline migration's service-only RPC serializes first-profile
+    // creation, so concurrent first logins cannot both become operators.
+    const { data: inserted, error } = await admin
+      .rpc('ensure_profile', { p_user_id: authUserId })
+      .single();
+    if (error) throw error;
+    profile = inserted;
+  }
+
+  return {
+    id: profile.id,
+    // Retained for callers that still use the old User shape; it is the Auth UUID.
+    openId: profile.id,
+    email: email ?? null,
+    name: name ?? null,
+    isOperator: profile.is_operator,
+  };
+}
+
+export function safeRedirectPath(value: string | null | undefined): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) return '/admin';
+  const base = new URL('https://redirect.invalid');
+  const target = new URL(value, base);
+  return target.origin === base.origin ? `${target.pathname}${target.search}${target.hash}` : '/admin';
+}
+
+/** The supplied origin must come from the current server request, not form data. */
+export function magicLinkRedirectUrl(requestOrigin?: string, next = '/admin'): string {
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || requestOrigin;
+  if (!origin) throw new Error('A site origin is required to send a magic link.');
+  const base = new URL(origin);
+  if (!['https:', 'http:'].includes(base.protocol) || base.username || base.password) {
+    throw new Error('Invalid site origin for the magic-link redirect.');
+  }
+  const callback = new URL('/auth/callback', base.origin);
+  callback.searchParams.set('next', safeRedirectPath(next));
+  return callback.toString();
+}
+
+export async function sendMagicLink(email: string, requestOrigin?: string, next = '/admin') {
+  const supabase = createServerClient();
+  const address = email.trim();
+  if (!address || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('Enter a valid email address.');
+  const { data, error } = await supabase.auth.signInWithOtp({
+    email: address,
+    options: { emailRedirectTo: magicLinkRedirectUrl(requestOrigin, next) },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export function isSameOrigin(request: Request): boolean {
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+  const allowed = new Set<string>([new URL(request.url).origin]);
+  const host = request.headers.get('host');
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  if (host) allowed.add(`${forwardedProto || new URL(request.url).protocol.replace(':', '')}://${host}`);
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    try {
+      allowed.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).origin);
+    } catch {
+      // Ignore malformed optional configuration; still require the request origin.
+    }
+  }
+  return allowed.has(origin);
+}

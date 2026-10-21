@@ -1,62 +1,97 @@
-import mysql, { type Pool, type RowDataPacket, type ResultSetHeader } from 'mysql2/promise';
-import { randomUUID } from 'crypto';
+import type { Product, Store } from './types';
 
-let pool: Pool | undefined;
-let schemaReady: Promise<void> | undefined;
+export { supabaseConfigured, ConfigurationRequiredError } from './supabase/server';
 
-export function getPool() {
-  if (!pool) {
-    const url = process.env.DATABASE_URL;
-    if (!url) throw new Error('DATABASE_URL is not configured');
-    pool = mysql.createPool({ uri: url, connectionLimit: 6, waitForConnections: true, ssl: url.includes('ssl') ? { rejectUnauthorized: false } : undefined });
-  }
-  return pool;
+export const migrationGuidance = 'Apply supabase/migrations with the Supabase CLI (supabase db push) before starting the app. Runtime requests never create or migrate tables.';
+
+/** Compatibility only: schema changes are applied offline, not during requests. */
+export async function ensureSchema(): Promise<void> {
+  // Intentionally no-op. See migrationGuidance.
 }
 
-export async function ensureSchema() {
-  if (!schemaReady) schemaReady = bootstrap();
-  return schemaReady;
-}
-
-async function bootstrap() {
-  const db = getPool();
-  await db.query(`CREATE TABLE IF NOT EXISTS profiles (id CHAR(36) PRIMARY KEY, open_id VARCHAR(191) NOT NULL UNIQUE, email VARCHAR(255), name VARCHAR(120), is_operator BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
-  await db.query(`CREATE TABLE IF NOT EXISTS stores (id CHAR(36) PRIMARY KEY, owner_id CHAR(36) NULL, slug VARCHAR(40) NOT NULL UNIQUE, name VARCHAR(80) NOT NULL, tagline VARCHAR(120), about_text TEXT, email VARCHAR(255), whatsapp_number VARCHAR(32), instagram_handle VARCHAR(120), logo_url TEXT, theme_color VARCHAR(7) NOT NULL DEFAULT '#111111', currency CHAR(3) NOT NULL DEFAULT 'USD', status ENUM('draft','published') NOT NULL DEFAULT 'draft', published_at TIMESTAMP NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_stores_owner FOREIGN KEY (owner_id) REFERENCES profiles(id) ON DELETE SET NULL, INDEX idx_stores_owner (owner_id), INDEX idx_stores_status (status))`);
-  await db.query(`CREATE TABLE IF NOT EXISTS products (id CHAR(36) PRIMARY KEY, store_id CHAR(36) NOT NULL, sku VARCHAR(64) NULL, title VARCHAR(120) NOT NULL, description TEXT, price DECIMAL(10,2) NOT NULL DEFAULT 0, currency CHAR(3) NOT NULL DEFAULT 'USD', image_urls LONGTEXT NOT NULL, category VARCHAR(60), availability ENUM('in_stock','out_of_stock') NOT NULL DEFAULT 'in_stock', sort_order INT NOT NULL DEFAULT 0, external_link TEXT, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_products_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE, INDEX idx_products_store (store_id), INDEX idx_products_category (store_id, category), INDEX idx_products_title (store_id, title), UNIQUE KEY uq_products_store_sku (store_id, sku))`);
-  for (const statement of [
-    `ALTER TABLE products ADD COLUMN is_draft BOOLEAN NOT NULL DEFAULT FALSE`,
-    `ALTER TABLE products ADD COLUMN source VARCHAR(32) NULL`,
-    `ALTER TABLE products ADD COLUMN source_id VARCHAR(191) NULL`,
-    `ALTER TABLE products ADD COLUMN source_user_id VARCHAR(191) NULL`,
-    `ALTER TABLE products ADD INDEX idx_products_source (store_id, source, source_id)`,
-    `ALTER TABLE products ADD UNIQUE KEY uq_products_source (store_id, source, source_id)`
-  ]) { try { await db.query(statement); } catch (error: any) { if (!String(error?.code || '').includes('ER_DUP_FIELDNAME') && !String(error?.code || '').includes('ER_DUP_KEYNAME')) throw error; } }
-  await db.query(`CREATE TABLE IF NOT EXISTS imports (id CHAR(36) PRIMARY KEY, store_id CHAR(36) NOT NULL, created_by CHAR(36) NOT NULL, filename VARCHAR(255) NOT NULL, row_count INT NOT NULL DEFAULT 0, imported_count INT NOT NULL DEFAULT 0, error_report LONGTEXT NOT NULL, status ENUM('previewed','committed','cancelled') NOT NULL DEFAULT 'previewed', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_imports_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE, CONSTRAINT fk_imports_creator FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE CASCADE, INDEX idx_imports_store (store_id))`);
-  await db.query(`CREATE TABLE IF NOT EXISTS instagram_connections (id CHAR(36) PRIMARY KEY, store_id CHAR(36) NOT NULL UNIQUE, meta_user_id VARCHAR(191) NULL, ig_user_id VARCHAR(191) NOT NULL, page_id VARCHAR(191) NOT NULL, page_name VARCHAR(191), username VARCHAR(191), profile_picture_url TEXT, encrypted_access_token LONGTEXT NOT NULL, token_expires_at TIMESTAMP NULL, status ENUM('connected','expired','error','revoked') NOT NULL DEFAULT 'connected', last_synced_at TIMESTAMP NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_ig_store FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE, INDEX idx_ig_user (meta_user_id), INDEX idx_ig_status (status))`);
-  await db.query(`CREATE TABLE IF NOT EXISTS instagram_deletion_requests (id CHAR(36) PRIMARY KEY, meta_user_id VARCHAR(191) NOT NULL, confirmation_code VARCHAR(32) NOT NULL UNIQUE, status ENUM('received','completed','error') NOT NULL DEFAULT 'received', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP NULL, INDEX idx_deletion_meta_user (meta_user_id))`);
-  await seedDemo(db);
-}
-
-async function seedDemo(db: Pool) {
-  const [rows] = await db.query<RowDataPacket[]>('SELECT id FROM stores WHERE slug = ?', ['demo-studio']);
-  if (rows.length) return;
-  const storeId = randomUUID();
-  await db.query<ResultSetHeader>('INSERT INTO stores (id, slug, name, tagline, about_text, email, whatsapp_number, instagram_handle, theme_color, currency, status, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())', [storeId, 'demo-studio', 'Demo Studio', 'Small-batch goods, ready to share.', 'A seeded storefront to prove the public browsing and ordering flow.', 'hello@example.com', '14155550123', 'demo.studio', '#0f766e', 'USD', 'published']);
-  const products = [
-    ['linen-tote', 'Linen Carryall', 'Roomy everyday tote with a soft structured shape.', 38, 'Accessories', 'https://images.unsplash.com/photo-1594223274512-ad4803739b7c?auto=format&fit=crop&w=900&q=80'],
-    ['ceramic-mug', 'Hand-thrown Mug', 'A warm, tactile mug for the daily ritual.', 28, 'Home', 'https://images.unsplash.com/photo-1514228742587-6b1558fcca3d?auto=format&fit=crop&w=900&q=80'],
-    ['soy-candle', 'Cedar Candle', 'A clean-burning candle with cedar and citrus notes.', 24, 'Home', 'https://images.unsplash.com/photo-1602874801006-e26d3e7df5ad?auto=format&fit=crop&w=900&q=80']
-  ];
-  for (let i = 0; i < products.length; i++) {
-    const [sku, title, description, price, category, image] = products[i];
-    await db.query('INSERT INTO products (id, store_id, sku, title, description, price, currency, image_urls, category, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [randomUUID(), storeId, sku, title, description, price, 'USD', JSON.stringify([image]), category, i]);
+export function parseJsonArray(value: unknown): string[] {
+  try {
+    const parsed: unknown = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
   }
 }
 
-export async function query<T extends RowDataPacket[] | ResultSetHeader = RowDataPacket[]>(sql: string, params: unknown[] = []) {
-  await ensureSchema();
-  const [result] = await getPool().query<T>(sql, params);
-  return result;
+const demoTimestamp = '2025-01-01T00:00:00.000Z';
+const demoStore: Store = {
+  id: '00000000-0000-4000-8000-000000000001',
+  ownerId: null,
+  slug: 'demo-studio',
+  name: 'Demo Studio',
+  tagline: 'Small-batch goods, ready to share.',
+  aboutText: 'A seeded storefront to prove the public browsing and ordering flow.',
+  email: 'hello@example.com',
+  whatsappNumber: '14155550123',
+  instagramHandle: 'demo.studio',
+  logoUrl: null,
+  themeColor: '#0f766e',
+  currency: 'USD',
+  status: 'published',
+  publishedAt: demoTimestamp,
+  createdAt: demoTimestamp,
+  updatedAt: demoTimestamp,
+};
+
+const demoProducts: Product[] = [
+  {
+    id: '00000000-0000-4000-8000-000000000011',
+    storeId: demoStore.id,
+    sku: 'linen-tote',
+    title: 'Linen Carryall',
+    description: 'Roomy everyday tote with a soft structured shape.',
+    price: 38,
+    category: 'Accessories',
+    imageUrls: ['https://images.unsplash.com/photo-1594223274512-ad4803739b7c?auto=format&fit=crop&w=900&q=80'],
+    sortOrder: 0,
+  },
+  {
+    id: '00000000-0000-4000-8000-000000000012',
+    storeId: demoStore.id,
+    sku: 'ceramic-mug',
+    title: 'Hand-thrown Mug',
+    description: 'A warm, tactile mug for the daily ritual.',
+    price: 28,
+    category: 'Home',
+    imageUrls: ['https://images.unsplash.com/photo-1514228742587-6b1558fcca3d?auto=format&fit=crop&w=900&q=80'],
+    sortOrder: 1,
+  },
+  {
+    id: '00000000-0000-4000-8000-000000000013',
+    storeId: demoStore.id,
+    sku: 'soy-candle',
+    title: 'Cedar Candle',
+    description: 'A clean-burning candle with cedar and citrus notes.',
+    price: 24,
+    category: 'Home',
+    imageUrls: ['https://images.unsplash.com/photo-1602874801006-e26d3e7df5ad?auto=format&fit=crop&w=900&q=80'],
+    sortOrder: 2,
+  },
+].map((product) => ({
+  ...product,
+  currency: 'USD',
+  availability: 'in_stock',
+  externalLink: null,
+  isDraft: false,
+  source: null,
+  sourceId: null,
+  sourceUserId: null,
+  createdAt: demoTimestamp,
+  updatedAt: demoTimestamp,
+}));
+
+/** Return copies so an unconfigured demo cannot acquire mutable "saved" state. */
+export function getDemoStore(): Store {
+  return { ...demoStore };
 }
 
-export function parseJsonArray(value: unknown): string[] { try { const parsed = typeof value === 'string' ? JSON.parse(value) : value; return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []; } catch { return []; } }
+export function getDemoProducts(storeId: string): Product[] {
+  return storeId === demoStore.id
+    ? demoProducts.map((product) => ({ ...product, imageUrls: [...product.imageUrls] }))
+    : [];
+}
